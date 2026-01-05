@@ -21,7 +21,7 @@ namespace MainCore.Services
         private BiDi? _bidi;
 
         private BrowsingContext? _context;
-        private Intercept? _authIntercept;
+        private Interception? _authIntercept;
 
         public ChromeBrowser(string[] extensionsPath)
         {
