@@ -64,7 +64,9 @@
 
             var button = upgradeButtonsContainer
                 .Descendants("button")
-                .FirstOrDefault(x => x.HasClass("videoFeatureButton") && x.HasClass("green"));
+                // AQUI ESTÁ A MUDANÇA: Trocamos "green" por "purple"
+                // O bot agora procura um botão que seja de vídeo E que seja roxo.
+                .FirstOrDefault(x => x.HasClass("videoFeatureButton") && x.HasClass("purple"));
             return button;
         }
 
