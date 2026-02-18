@@ -1,9 +1,17 @@
-﻿using MainCore.Commands.UI.EditAccountViewModel;
+using MainCore.Commands.UI.EditAccountViewModel;
 using MainCore.UI.Models.Input;
 using MainCore.UI.Models.Output;
 using MainCore.UI.ViewModels.Abstract;
 using MainCore.UI.ViewModels.UserControls;
 using Microsoft.Extensions.DependencyInjection;
+using MainCore.Helpers;
+using System.Threading.Tasks;
+using System;
+using System.Linq;
+using ReactiveUI;
+using MainCore.Infrasturecture.Persistence;
+using Microsoft.EntityFrameworkCore;
+using System.Reactive.Concurrency; // [IMPORTANTE] Adicionado para corrigir o erro de thread
 
 namespace MainCore.UI.ViewModels.Tabs
 {
@@ -12,6 +20,22 @@ namespace MainCore.UI.ViewModels.Tabs
     {
         public AccountInput AccountInput { get; } = new();
         public AccessInput AccessInput { get; } = new();
+
+        // --- Propriedades do Telegram ---
+        private string _telegramToken = "";
+        public string TelegramToken
+        {
+            get => _telegramToken;
+            set => this.RaiseAndSetIfChanged(ref _telegramToken, value);
+        }
+
+        private string _telegramChatId = "";
+        public string TelegramChatId
+        {
+            get => _telegramChatId;
+            set => this.RaiseAndSetIfChanged(ref _telegramChatId, value);
+        }
+        // -------------------------------------
 
         private readonly IValidator<AccessInput> _accessInputValidator;
         private readonly IValidator<AccountInput> _accountInputValidator;
@@ -37,7 +61,18 @@ namespace MainCore.UI.ViewModels.Tabs
 
         protected override async Task Load(AccountId accountId)
         {
+            // Executa o carregamento da conta (pode demorar e rodar em outra thread)
             await LoadAccountCommand.Execute(accountId);
+
+            // Carrega as configs do arquivo (rápido)
+            var settings = TelegramHelper.GetSettings(accountId);
+
+            // [CORREÇÃO] Força a atualização da tela a ocorrer na Thread Principal (UI Thread)
+            RxApp.MainThreadScheduler.Schedule(() =>
+            {
+                TelegramToken = settings.BotToken;
+                TelegramChatId = settings.ChatId;
+            });
         }
 
         [ReactiveCommand]
@@ -91,10 +126,35 @@ namespace MainCore.UI.ViewModels.Tabs
             using var scope = _serviceScopeFactory.CreateScope(AccountId);
             var updateAccountCommand = scope.ServiceProvider.GetRequiredService<UpdateAccountCommand.Handler>();
             await updateAccountCommand.HandleAsync(new(AccountInput.ToDto()));
+
+            // Salvar Telegram (aqui não precisa de Schedule pois não mexe na tela, só no arquivo)
+            TelegramHelper.SaveSettings(AccountId, TelegramToken, TelegramChatId);
+
             await _waitingOverlayViewModel.Hide();
             await _dialogService.MessageBox.Handle(new MessageBoxData("Information", "Edited account"));
 
             await LoadAccountCommand.Execute(AccountId);
+        }
+
+        [ReactiveCommand]
+        private async Task TestTelegram()
+        {
+            if (string.IsNullOrEmpty(TelegramToken) || string.IsNullOrEmpty(TelegramChatId))
+            {
+                await _dialogService.MessageBox.Handle(new MessageBoxData("Erro", "Preencha o Token e o Chat ID antes de testar."));
+                return;
+            }
+
+            try
+            {
+                await TelegramHelper.TestSettings(TelegramToken, TelegramChatId);
+                TelegramHelper.SaveSettings(AccountId, TelegramToken, TelegramChatId);
+                await _dialogService.MessageBox.Handle(new MessageBoxData("Sucesso", "Mensagem enviada com sucesso!"));
+            }
+            catch (Exception ex)
+            {
+                await _dialogService.MessageBox.Handle(new MessageBoxData("Falha", $"Erro: {ex.Message}"));
+            }
         }
 
         [ReactiveCommand]
