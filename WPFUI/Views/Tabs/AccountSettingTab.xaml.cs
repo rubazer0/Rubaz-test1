@@ -22,12 +22,8 @@ namespace WPFUI.Views.Tabs
                 this.BindCommand(ViewModel, vm => vm.ExportCommand, v => v.ExportButton).DisposeWith(d);
                 this.BindCommand(ViewModel, vm => vm.ImportCommand, v => v.ImportButton).DisposeWith(d);
                 this.BindCommand(ViewModel, vm => vm.SaveCommand, v => v.SaveButton).DisposeWith(d);
-                this.BindCommand(ViewModel, vm => vm.TestTelegramCommand, v => v.TestTelegramButton).DisposeWith(d);
 
-                // --- LIGAÇÃO DOS CAMPOS DE TEXTO DO TELEGRAM ---
-                this.Bind(ViewModel, vm => vm.TelegramToken, v => v.TelegramTokenText.Text).DisposeWith(d);
-                this.Bind(ViewModel, vm => vm.TelegramChatId, v => v.TelegramChatIdText.Text).DisposeWith(d);
-                // -----------------------------------------------
+                // NOTA: Removido o binding do TestTelegramCommand pois movemos para EditAccount
 
                 // Outros Bindings
                 this.Bind(ViewModel, vm => vm.AccountSettingInput.ClickDelay, v => v.ClickDelay.ViewModel).DisposeWith(d);
