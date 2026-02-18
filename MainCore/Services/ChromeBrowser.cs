@@ -1,4 +1,4 @@
-﻿using OpenQA.Selenium.BiDi;
+using OpenQA.Selenium.BiDi;
 using OpenQA.Selenium.BiDi.BrowsingContext;
 using OpenQA.Selenium.BiDi.Network;
 using OpenQA.Selenium.BiDi.WebExtension;
