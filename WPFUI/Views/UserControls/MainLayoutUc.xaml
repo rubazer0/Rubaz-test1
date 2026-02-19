@@ -44,10 +44,17 @@
                 <ListBox x:Name="AccountGrid" SelectionMode="Single" ItemTemplate="{DynamicResource ListBoxColorItem}" />
             </Border>
             <Border Style="{DynamicResource Box}" Grid.Row="2">
-                <StackPanel Orientation="Horizontal">
-                    <Label Content="Version: "></Label>
-                    <Label x:Name="Version" Content="30.4.1975"></Label>
-                </StackPanel>
+                <Grid>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Label Content="Version: "></Label>
+                        <Label x:Name="Version" Content="30.4.1975"></Label>
+                    </StackPanel>
+                    
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
+                        <Label Content="Last Online Activity: " />
+                        <Label Content="{Binding OnlineTimeText}" Foreground="{Binding OnlineTimeColor}" FontWeight="Bold" />
+                    </StackPanel>
+                </Grid>
             </Border>
         </Grid>
         <Border Style="{DynamicResource Box}" Grid.Column="1" Margin="10,0,0,5">
