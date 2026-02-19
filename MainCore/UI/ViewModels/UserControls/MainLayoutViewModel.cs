@@ -360,5 +360,15 @@ namespace MainCore.UI.ViewModels.UserControls
 
         [Reactive]
         private string _pauseText = "[~~!~~]";
+
+        [Reactive]
+        private string _onlineTimeText = "0.0 hours";
+
+        [Reactive]
+        private string _onlineTimeColor = "Black"; // Cor padrão
+
+        // Variáveis para controlar o tempo nos bastidores
+        private readonly Dictionary<int, TimeSpan> _accountOnlineTimes = new();
+        private readonly Dictionary<int, DateTime> _lastUpdateTimes = new();
     }
 }
