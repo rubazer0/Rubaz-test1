@@ -1,8 +1,9 @@
-﻿using MainCore.Commands.UI.MainLayoutViewModel;
+using MainCore.Commands.UI.MainLayoutViewModel;
 using MainCore.UI.Models.Output;
 using MainCore.UI.Stores;
 using MainCore.UI.ViewModels.Abstract;
 using Microsoft.Extensions.DependencyInjection;
+using System.Reactive.Concurrency;
 using System.Reflection;
 
 namespace MainCore.UI.ViewModels.UserControls
@@ -15,20 +16,22 @@ namespace MainCore.UI.ViewModels.UserControls
         private readonly ITaskManager _taskManager;
         private readonly ILogger _logger;
 
+        private readonly IRxQueue _rxQueue;
+
         private readonly AccountTabStore _accountTabStore;
         public ListBoxItemViewModel Accounts { get; } = new();
         public AccountTabStore AccountTabStore => _accountTabStore;
 
         private IObservable<bool> _canExecute;
 
-        public MainLayoutViewModel(AccountTabStore accountTabStore, SelectedItemStore selectedItemStore, IDialogService dialogService, ITaskManager taskManager, ICustomServiceScopeFactory serviceScopeFactory, ILogger logger)
+        public MainLayoutViewModel(AccountTabStore accountTabStore, SelectedItemStore selectedItemStore, IDialogService dialogService, ITaskManager taskManager, ICustomServiceScopeFactory serviceScopeFactory, ILogger logger, IRxQueue rxQueue)
         {
             _accountTabStore = accountTabStore;
             _dialogService = dialogService;
             _serviceScopeFactory = serviceScopeFactory;
+            _rxQueue = rxQueue;
             _logger = logger.ForContext<MainLayoutViewModel>();
 
-            taskManager.StatusUpdated += LoadStatus;
             _taskManager = taskManager;
 
             _canExecute = this.WhenAnyValue(x => x.Accounts.IsEnable);
@@ -65,12 +68,37 @@ namespace MainCore.UI.ViewModels.UserControls
                     RestartCommand.IsExecuting.Select(x => !x)
                 )
                 .BindTo(Accounts, x => x.IsEnable);
+
+            rxQueue.RegisterCommand<StatusModified>(StatusModifiedCommand);
+
+            rxQueue.GetObservable<AccountsModified>()
+                .Select(x => Unit.Default)
+               .InvokeCommand(LoadAccountCommand);
+
+            Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(5), RxApp.MainThreadScheduler)
+                .Subscribe(_ => UpdateOnlineTime());
         }
 
         public async Task Load()
         {
             await LoadVersionCommand.Execute();
             await LoadAccountCommand.Execute();
+        }
+
+        [ReactiveCommand]
+        private void StatusModified(StatusModified notification)
+        {
+            if (Accounts.SelectedItem is null) return;
+            var (accountId, status) = notification;
+
+            var account = Accounts.Items.FirstOrDefault(x => x.Id == accountId.Value);
+            if (account is null) return;
+
+            RxApp.MainThreadScheduler.Schedule(() =>
+            {
+                account.Color = status.GetColor();
+                SetPauseText(status);
+            });
         }
 
         [ReactiveCommand(CanExecute = nameof(_canExecute))]
@@ -142,7 +170,7 @@ namespace MainCore.UI.ViewModels.UserControls
                 return;
             }
 
-            var getAccessQuery = scope.ServiceProvider.GetRequiredService<GetValidAccessQuery.Handler>();
+            var getAccessQuery = scope.ServiceProvider.GetRequiredService<GetValidAccessCommand.Handler>();
             var result = await getAccessQuery.HandleAsync(new(accountId));
             if (result.IsFailed)
             {
@@ -151,7 +179,11 @@ namespace MainCore.UI.ViewModels.UserControls
             }
 
             var loginCommand = scope.ServiceProvider.GetRequiredService<LoginCommand.Handler>();
-            await loginCommand.HandleAsync(new(accountId, result.Value));
+
+            await Observable.StartAsync(async () =>
+            {
+                await loginCommand.HandleAsync(new(accountId, result.Value));
+            }, RxApp.TaskpoolScheduler);
         }
 
         [ReactiveCommand(CanExecute = nameof(_canExecute))]
@@ -185,7 +217,10 @@ namespace MainCore.UI.ViewModels.UserControls
 
             using var scope = _serviceScopeFactory.CreateScope(accountId);
             var logoutCommand = scope.ServiceProvider.GetRequiredService<LogoutCommand.Handler>();
-            await logoutCommand.HandleAsync(new(accountId));
+            await Observable.StartAsync(async () =>
+            {
+                await logoutCommand.HandleAsync(new(accountId));
+            }, RxApp.TaskpoolScheduler);
         }
 
         [ReactiveCommand(CanExecute = nameof(_canExecute))]
@@ -207,7 +242,11 @@ namespace MainCore.UI.ViewModels.UserControls
                     break;
 
                 case StatusEnums.Online:
-                    await _taskManager.StopCurrentTask(accountId);
+                    await Observable.StartAsync(async () =>
+                    {
+                        await _taskManager.StopCurrentTask(accountId);
+                    }, RxApp.TaskpoolScheduler);
+
                     break;
 
                 case StatusEnums.Offline:
@@ -249,23 +288,12 @@ namespace MainCore.UI.ViewModels.UserControls
 
                 case StatusEnums.Paused:
                     _taskManager.SetStatus(accountId, StatusEnums.Starting);
+                    await Task.Delay(300);
                     _taskManager.Clear(accountId);
-                    using (var scope = _serviceScopeFactory.CreateScope(accountId))
-                    {
-                        await scope.ServiceProvider.GetRequiredService<AccountInit.Handler>().HandleAsync(new(accountId));
-                    }
+                    _rxQueue.Enqueue(new AccountInit(accountId));
                     _taskManager.SetStatus(accountId, StatusEnums.Online);
                     return;
             }
-        }
-
-        public void LoadStatus(AccountId accountId)
-        {
-            if (Accounts.SelectedItem is null) return;
-            var status = GetStatus(accountId);
-            GetAccountCommand.Execute(accountId).WhereNotNull().Subscribe(account => account.Color = status.GetColor());
-            if (accountId.Value != Accounts.SelectedItem.Id) return;
-            GetStatusCommand.Execute(accountId).Subscribe();
         }
 
         [ReactiveCommand]
@@ -276,19 +304,33 @@ namespace MainCore.UI.ViewModels.UserControls
         }
 
         [ReactiveCommand]
-        private async Task<List<ListBoxItem>> LoadAccount()
+        private List<ListBoxItem> LoadAccount()
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            var getAccountItemsQuery = scope.ServiceProvider.GetRequiredService<GetAccountItemsQuery.Handler>();
-            var items = await getAccountItemsQuery.HandleAsync(new());
-            return items;
-        }
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var taskManager = scope.ServiceProvider.GetRequiredService<ITaskManager>();
+            var items = context.Accounts
+                 .AsEnumerable()
+                 .Select(x =>
+                 {
+                     // Carrega os dados persistidos para os dicionários em memória
+                     if (!_accountOnlineTimes.ContainsKey(x.Id))
+                         _accountOnlineTimes[x.Id] = TimeSpan.FromTicks(x.OnlineTimeTicks);
 
-        [ReactiveCommand]
-        private ListBoxItem? GetAccount(AccountId accountId)
-        {
-            var account = Accounts.Items.FirstOrDefault(x => x.Id == accountId.Value);
-            return account;
+                     if (!_lastActivityDate.ContainsKey(x.Id))
+                         _lastActivityDate[x.Id] = x.LastActivityDate;
+
+                     var serverUrl = new Uri(x.Server);
+                     var status = taskManager.GetStatus(new(x.Id));
+                     return new ListBoxItem()
+                     {
+                         Id = x.Id,
+                         Color = status.GetColor(),
+                         Content = $"{x.Username}{Environment.NewLine}({serverUrl.Host})"
+                     };
+                 })
+                 .ToList();
+            return items;
         }
 
         [ReactiveCommand]
@@ -323,10 +365,87 @@ namespace MainCore.UI.ViewModels.UserControls
             }
         }
 
+        private void UpdateOnlineTime()
+        {
+            if (Accounts.SelectedItem is null)
+            {
+                OnlineTimeText = "0.0 hours";
+                OnlineTimeColor = "Black";
+                return;
+            }
+
+            var accountId = Accounts.SelectedItem.Id;
+            var accIdObj = new AccountId(accountId);
+
+            // Lógica de Reset Diário (Zera após 00:00)
+            var today = DateTime.Today;
+            if (!_lastActivityDate.TryGetValue(accountId, out var lastDate) || lastDate < today)
+            {
+                _accountOnlineTimes[accountId] = TimeSpan.Zero;
+                _lastActivityDate[accountId] = today;
+                SaveToDatabase(accountId, TimeSpan.Zero, today);
+            }
+
+            var status = _taskManager.GetStatus(accIdObj);
+            var currentTask = _taskManager.GetCurrentTask(accIdObj);
+            bool isSleeping = currentTask is MainCore.Tasks.SleepTask.Task;
+
+            if (status == StatusEnums.Online && !isSleeping)
+            {
+                if (_lastUpdateTimes.TryGetValue(accountId, out var lastUpdateTime))
+                {
+                    var diff = DateTime.Now - lastUpdateTime;
+                    if (!_accountOnlineTimes.ContainsKey(accountId))
+                        _accountOnlineTimes[accountId] = TimeSpan.Zero;
+
+                    _accountOnlineTimes[accountId] += diff;
+
+                    // Salva o progresso no banco de dados
+                    SaveToDatabase(accountId, _accountOnlineTimes[accountId], today);
+                }
+            }
+
+            _lastUpdateTimes[accountId] = DateTime.Now;
+
+            if (_accountOnlineTimes.TryGetValue(accountId, out var totalTime))
+            {
+                var hours = totalTime.TotalHours;
+                OnlineTimeText = $"{hours:F1} hours";
+
+                if (hours >= 10) OnlineTimeColor = "Red";
+                else if (hours >= 8) OnlineTimeColor = "Orange";
+                else OnlineTimeColor = "Black";
+            }
+        }
+
+        private void SaveToDatabase(int accountId, TimeSpan time, DateTime date)
+        {
+            // Executa em uma Thread separada para não travar a UI
+            Task.Run(() => {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var account = context.Accounts.FirstOrDefault(x => x.Id == accountId);
+                if (account != null)
+                {
+                    account.OnlineTimeTicks = time.Ticks;
+                    account.LastActivityDate = date;
+                    context.SaveChanges();
+                }
+            });
+        }
+
         [ObservableAsProperty]
         private string _version = "";
 
         [Reactive]
         private string _pauseText = "[~~!~~]";
+        [Reactive]
+        private string _onlineTimeText = "0.0 hours";
+        [Reactive]
+        private string _onlineTimeColor = "Black";
+
+        private readonly Dictionary<int, TimeSpan> _accountOnlineTimes = new();
+        private readonly Dictionary<int, DateTime> _lastUpdateTimes = new();
+        private readonly Dictionary<int, DateTime> _lastActivityDate = new(); // Controla a data do último registro
     }
 }
