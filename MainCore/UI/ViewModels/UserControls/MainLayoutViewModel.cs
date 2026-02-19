@@ -1,4 +1,4 @@
-﻿using MainCore.Commands.UI.MainLayoutViewModel;
+using MainCore.Commands.UI.MainLayoutViewModel;
 using MainCore.UI.Models.Output;
 using MainCore.UI.Stores;
 using MainCore.UI.ViewModels.Abstract;
@@ -74,6 +74,9 @@ namespace MainCore.UI.ViewModels.UserControls
             rxQueue.GetObservable<AccountsModified>()
                 .Select(x => Unit.Default)
                .InvokeCommand(LoadAccountCommand);
+
+            Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(5), RxApp.MainThreadScheduler)
+                .Subscribe(_ => UpdateOnlineTime());
         }
 
         public async Task Load()
@@ -353,6 +356,59 @@ namespace MainCore.UI.ViewModels.UserControls
                 default:
                     break;
             }
+
+
+        }
+
+        private void UpdateOnlineTime()
+        {
+            // Se nenhuma conta estiver selecionada na lista, zera a exibição
+            if (Accounts.SelectedItem is null)
+            {
+                OnlineTimeText = "0.0 hours";
+                OnlineTimeColor = "Black";
+                return;
+            }
+
+            var accountId = Accounts.SelectedItem.Id;
+            var accIdObj = new AccountId(accountId);
+            var status = _taskManager.GetStatus(accIdObj);
+
+            // Verifica qual é a tarefa rodando no momento
+            var currentTask = _taskManager.GetCurrentTask(accIdObj);
+
+            // Checa se a tarefa atual é o SleepTask
+            bool isSleeping = currentTask is MainCore.Tasks.SleepTask.Task;
+
+            // Só conta o tempo se o status for Online e NÃO estiver dormindo
+            if (status == StatusEnums.Online && !isSleeping)
+            {
+                if (_lastUpdateTimes.TryGetValue(accountId, out var lastTime))
+                {
+                    var diff = DateTime.Now - lastTime;
+                    if (!_accountOnlineTimes.ContainsKey(accountId))
+                        _accountOnlineTimes[accountId] = TimeSpan.Zero;
+
+                    _accountOnlineTimes[accountId] += diff;
+                }
+            }
+
+            // Atualiza o relógio interno para a próxima checagem
+            _lastUpdateTimes[accountId] = DateTime.Now;
+
+            // Atualiza os textos e as cores que vão para a tela
+            if (_accountOnlineTimes.TryGetValue(accountId, out var totalTime))
+            {
+                var hours = totalTime.TotalHours;
+                OnlineTimeText = $"{hours:F1} hours"; // Exibe com 1 casa decimal (ex: 10.7)
+
+                if (hours >= 10)
+                    OnlineTimeColor = "Red";
+                else if (hours >= 8)
+                    OnlineTimeColor = "Orange";
+                else
+                    OnlineTimeColor = "Black";
+            }
         }
 
         [ObservableAsProperty]
@@ -360,7 +416,6 @@ namespace MainCore.UI.ViewModels.UserControls
 
         [Reactive]
         private string _pauseText = "[~~!~~]";
-
         [Reactive]
         private string _onlineTimeText = "0.0 hours";
 
