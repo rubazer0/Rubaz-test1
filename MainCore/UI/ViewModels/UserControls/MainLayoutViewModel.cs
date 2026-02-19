@@ -313,6 +313,13 @@ namespace MainCore.UI.ViewModels.UserControls
                  .AsEnumerable()
                  .Select(x =>
                  {
+                     // Carrega os dados persistidos para os dicionários em memória
+                     if (!_accountOnlineTimes.ContainsKey(x.Id))
+                         _accountOnlineTimes[x.Id] = TimeSpan.FromTicks(x.OnlineTimeTicks);
+
+                     if (!_lastActivityDate.ContainsKey(x.Id))
+                         _lastActivityDate[x.Id] = x.LastActivityDate;
+
                      var serverUrl = new Uri(x.Server);
                      var status = taskManager.GetStatus(new(x.Id));
                      return new ListBoxItem()
@@ -356,13 +363,10 @@ namespace MainCore.UI.ViewModels.UserControls
                 default:
                     break;
             }
-
-
         }
 
         private void UpdateOnlineTime()
         {
-            // Se nenhuma conta estiver selecionada na lista, zera a exibição
             if (Accounts.SelectedItem is null)
             {
                 OnlineTimeText = "0.0 hours";
@@ -372,43 +376,62 @@ namespace MainCore.UI.ViewModels.UserControls
 
             var accountId = Accounts.SelectedItem.Id;
             var accIdObj = new AccountId(accountId);
+
+            // Lógica de Reset Diário (Zera após 00:00)
+            var today = DateTime.Today;
+            if (!_lastActivityDate.TryGetValue(accountId, out var lastDate) || lastDate < today)
+            {
+                _accountOnlineTimes[accountId] = TimeSpan.Zero;
+                _lastActivityDate[accountId] = today;
+                SaveToDatabase(accountId, TimeSpan.Zero, today);
+            }
+
             var status = _taskManager.GetStatus(accIdObj);
-
-            // Verifica qual é a tarefa rodando no momento
             var currentTask = _taskManager.GetCurrentTask(accIdObj);
-
-            // Checa se a tarefa atual é o SleepTask
             bool isSleeping = currentTask is MainCore.Tasks.SleepTask.Task;
 
-            // Só conta o tempo se o status for Online e NÃO estiver dormindo
             if (status == StatusEnums.Online && !isSleeping)
             {
-                if (_lastUpdateTimes.TryGetValue(accountId, out var lastTime))
+                if (_lastUpdateTimes.TryGetValue(accountId, out var lastUpdateTime))
                 {
-                    var diff = DateTime.Now - lastTime;
+                    var diff = DateTime.Now - lastUpdateTime;
                     if (!_accountOnlineTimes.ContainsKey(accountId))
                         _accountOnlineTimes[accountId] = TimeSpan.Zero;
 
                     _accountOnlineTimes[accountId] += diff;
+
+                    // Salva o progresso no banco de dados
+                    SaveToDatabase(accountId, _accountOnlineTimes[accountId], today);
                 }
             }
 
-            // Atualiza o relógio interno para a próxima checagem
             _lastUpdateTimes[accountId] = DateTime.Now;
 
-            // Atualiza os textos e as cores que vão para a tela
             if (_accountOnlineTimes.TryGetValue(accountId, out var totalTime))
             {
                 var hours = totalTime.TotalHours;
-                OnlineTimeText = $"{hours:F1} hours"; // Exibe com 1 casa decimal (ex: 10.7)
+                OnlineTimeText = $"{hours:F1} hours";
 
-                if (hours >= 10)
-                    OnlineTimeColor = "Red";
-                else if (hours >= 8)
-                    OnlineTimeColor = "Orange";
-                else
-                    OnlineTimeColor = "Black";
+                if (hours >= 10) OnlineTimeColor = "Red";
+                else if (hours >= 8) OnlineTimeColor = "Orange";
+                else OnlineTimeColor = "Black";
             }
+        }
+
+        private void SaveToDatabase(int accountId, TimeSpan time, DateTime date)
+        {
+            // Executa em uma Thread separada para não travar a UI
+            Task.Run(() => {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var account = context.Accounts.FirstOrDefault(x => x.Id == accountId);
+                if (account != null)
+                {
+                    account.OnlineTimeTicks = time.Ticks;
+                    account.LastActivityDate = date;
+                    context.SaveChanges();
+                }
+            });
         }
 
         [ObservableAsProperty]
@@ -418,12 +441,11 @@ namespace MainCore.UI.ViewModels.UserControls
         private string _pauseText = "[~~!~~]";
         [Reactive]
         private string _onlineTimeText = "0.0 hours";
-
         [Reactive]
-        private string _onlineTimeColor = "Black"; // Cor padrão
+        private string _onlineTimeColor = "Black";
 
-        // Variáveis para controlar o tempo nos bastidores
         private readonly Dictionary<int, TimeSpan> _accountOnlineTimes = new();
         private readonly Dictionary<int, DateTime> _lastUpdateTimes = new();
+        private readonly Dictionary<int, DateTime> _lastActivityDate = new(); // Controla a data do último registro
     }
 }
