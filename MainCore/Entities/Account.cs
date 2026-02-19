@@ -1,4 +1,4 @@
-﻿using StronglyTypedIds;
+using StronglyTypedIds;
 using System.ComponentModel.DataAnnotations.Schema;
 
 #nullable disable
@@ -12,6 +12,10 @@ namespace MainCore.Entities
 
         public string Username { get; set; }
         public string Server { get; set; }
+
+        // Novos campos para persistência da atividade online
+        public long OnlineTimeTicks { get; set; }
+        public DateTime LastActivityDate { get; set; }
 
         public AccountInfo Info { get; set; }
 
